@@ -1,53 +1,47 @@
 services:
   postgres:
-    image: postgres:16
-    container_name: postgres
+    image: postgres:16-alpine
     networks:
       hudi_net:
     environment:
-      POSTGRES_DB: demo
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres123
-    ports:
-      - "5432:5432"
-  spark-runner:
-    image: apache/spark:3.5.2
-    container_name: spark-runner
-    depends_on:
-      - minio
-      - hive-metastore
-      - mc
+      POSTGRES_DB: metastore
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d metastore"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+  metastore:
+    image: apache/hive:4.0.0
     networks:
       hudi_net:
     volumes:
-      - ./.ivy2:/home/spark/.ivy2
-      - ./.m2:/home/spark/.m2
-      - ./spark-conf:/opt/spark/conf
-      - ./hudi-sql:/init:ro
-      - ./parquet_data:/parquet_data:ro
-    environment:
-      HMS_URI: thrift://hive-metastore:9083
-      MINIO_ENDPOINT: http://minio:9000
-      MINIO_ACCESS_KEY: admin
-      MINIO_SECRET_KEY: password
-    command: >
-      bash -lc '/opt/spark/bin/spark-sql -f /init/init.sql'
-  hive-metastore:
-    image: apache/hive:4.0.0
-    container_name: hive-metastore
-    networks:
-      hudi_net:
+      - ./jars/postgresql-42.7.3.jar:/opt/hive/lib/postgresql-42.7.3.jar:ro
     depends_on:
-      - minio
+      - postgres
+    command: >
+      bash -lc '
+        schematool -dbType postgres -initSchema --verbose \
+          --hiveconf javax.jdo.option.ConnectionURL=jdbc:postgresql://postgres:5432/metastore \
+          --hiveconf javax.jdo.option.ConnectionDriverName=org.postgresql.Driver \
+          --hiveconf javax.jdo.option.ConnectionUserName=postgres \
+          --hiveconf javax.jdo.option.ConnectionPassword=postgres123 \
+          || true;
+        exec /opt/hive/bin/hive --service metastore -p 9083 \
+          --hiveconf javax.jdo.option.ConnectionURL=jdbc:postgresql://postgres:5432/metastore \
+          --hiveconf javax.jdo.option.ConnectionDriverName=org.postgresql.Driver \
+          --hiveconf javax.jdo.option.ConnectionUserName=postgres \
+          --hiveconf javax.jdo.option.ConnectionPassword=postgres123
+      '
   minio:
     image: minio/minio
     container_name: minio
+    networks:
+      hudi_net:
     environment:
       - MINIO_ROOT_USER=admin
       - MINIO_ROOT_PASSWORD=password
-      - MINIO_DOMAIN=minio
-    networks:
-      hudi_net:
     ports:
       - 9001:9001
       - 9000:9000
@@ -72,28 +66,23 @@ services:
       tail -f /dev/null
       "
   spark:
-    image: apache/spark:3.5.2
-    container_name: spark
-    depends_on:
-      - hive-metastore
-      - minio
+    image: apache/spark:3.5.6
     volumes:
-      - ./.ivy2:/home/spark/.ivy2
-      - ./.m2:/home/spark/.m2
-      - ./spark-conf:/opt/spark/conf
-      - ./hudi-sql:/init:ro
+      - ./spark-conf/spark-defaults.conf:/opt/spark/conf/spark-defaults.conf:ro
       - ./parquet_data:/parquet_data:ro
+      - ./init.sql:/init.sql:ro
+    networks:
+      hudi_net:
     environment:
-      HMS_URI: thrift://hive-metastore:9083
-      MINIO_ENDPOINT: http://minio:9000
-      MINIO_ACCESS_KEY: admin
-      MINIO_SECRET_KEY: password
-    command: ["bash","-lc","tail -f /dev/null"]
+      AWS_ACCESS_KEY_ID: admin
+      AWS_SECRET_ACCESS_KEY: password
+    depends_on:
+      - metastore
+      - minio
+    command: ["bash", "-lc", "tail -f /dev/null"]
   puppygraph:
     image: puppygraph/puppygraph:stable
     container_name: puppygraph
-    networks:
-      hudi_net:
     environment:
       - PUPPYGRAPH_USERNAME=puppygraph
       - PUPPYGRAPH_PASSWORD=puppygraph123

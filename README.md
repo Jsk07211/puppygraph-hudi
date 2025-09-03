@@ -484,4 +484,4 @@ docker compose down --volumes --remove-orphans
 
 Check for databases:
 docker compose exec spark /opt/spark/bin/spark-sql -e "SHOW DATABASES";
-docker compose exec spark /opt/spark/bin/spark-sql -f /work/sql/init.sql;
+docker compose exec spark /opt/spark/bin/spark-sql -f /init.sql
